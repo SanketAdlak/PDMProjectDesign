@@ -1,0 +1,11 @@
+# Ignore everything currently in the repo
+.claude/
+.codex/
+.gemini/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+graphify-out/
+
+# Re-ignore gitignore itself so it stays tracked
+!.gitignore
