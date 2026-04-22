@@ -197,28 +197,96 @@ interface DataFlowSystemEntry {
 }
 ```
 
-### 5.2 Snapshot Mechanism
+### 5.2 Snapshot Protocol (Two-Step, One-Time-Use)
+
+The Module 2 Discovery API (`https://api.truststack.in/discovery/v1`) uses a two-step snapshot protocol. The Erasure Engine authenticates with a scoped `X-API-Key` (scope: `ERASURE_ENGINE`) issued at tenant onboarding.
+
+**Step 1 — Request snapshot token:**
 
 ```typescript
-// Module 2 exposes a time-limited snapshot endpoint (not live scanning)
-// Erasure Engine calls this once per erasure operation
-
-async function fetchDataFlowMapSnapshot(
-  tenantId: string,
-  dpIdentifierHash: string
-): Promise<DataFlowMap> {
-  // One-time token (15-minute TTL) from Module 2's auth service
-  // This is the only cross-account communication allowed
-  const token = await module2Auth.getErasureToken(tenantId);
-  
-  const response = await module2ApiClient.get('/v1/data-flow-map/snapshot', {
-    headers: { 'X-Erasure-Token': token },
-    params: { tenantId, dpIdentifierHash },
+// DPDPA Section 2(g): Only cross-account call permitted — signed request, no VPC access
+async function requestSnapshotToken(
+  dpIdentifierHash: string,
+  justification: 'CONSENT_WITHDRAWN' | 'DP_REQUEST' | 'PURPOSE_FULFILLED'
+): Promise<{ snapshotToken: string; expiresAt: string; systemCount: number }> {
+  const response = await discoveryApiClient.post('/snapshot/request', {
+    dpIdentifierHash,
+    justification,
+  }, {
+    headers: { 'X-API-Key': process.env.DISCOVERY_API_KEY },
   });
-  
+  // Token is a signed JWT. TTL: 15 minutes.
   return response.data;
 }
 ```
+
+**Step 2 — Consume snapshot (one-time use, token invalidated after first call):**
+
+```typescript
+async function consumeSnapshot(snapshotToken: string): Promise<DataFlowMap> {
+  const response = await discoveryApiClient.get(`/snapshot/${snapshotToken}`, {
+    headers: { 'X-API-Key': process.env.DISCOVERY_API_KEY },
+  });
+  // HTTP 410 Gone if token already consumed or expired
+  return response.data;
+}
+
+// Snapshot response schema (from Module 2 API):
+interface SnapshotResponse {
+  dpIdentifierHash: string;
+  snapshotAt: string;               // ISO 8601 — when the map was last built
+  systems: SnapshotSystem[];
+}
+
+interface SnapshotSystem {
+  id: string;
+  name: string;                     // e.g., "Zoho CRM — Production"
+  connector: string;                // e.g., "ZOHO_CRM"
+  dataCategories: DpdpaCategory[];  // What data types were found
+  estimatedRecords: number;
+  lastSeenAt: string;               // Used for 3-year timeline calculation
+  connectionRef: string;            // Opaque encrypted reference to connector config
+                                    // in Discovery's Secrets Manager — passed back to
+                                    // Discovery connector calls during erasure execution
+  regulatoryConflicts: RegulatoryConflict[];  // RBI/GST/SEBI holds if any
+}
+
+interface RegulatoryConflict {
+  type: 'RBI_5YR_PAYMENT' | 'GST_6YR_INVOICE' | 'SEBI_5YR_TRADE' | 'CERT_IN_LOGS';
+  description: string;
+  holdUntil: string;                // Date after which deletion becomes eligible
+  affectedDataCategories: string[];
+}
+```
+
+**Rate limit:** 1 snapshot request per DP per hour. Erasure Engine caches the snapshot for the duration of the workflow (in Temporal's state).
+
+**Why one-time-use?** Prevents token replay attacks. If the Erasure Engine workflow is interrupted mid-execution, it uses the cached snapshot from Temporal state — it does NOT request a new token. The snapshot is persisted in `erasure_operations.discovery_snapshot_token_id` for audit purposes.
+
+### 5.3 `connectionRef` in Connector Execution
+
+During erasure execution, the Executor Agent does not hold live credentials to vendor systems. Instead, it passes the opaque `connectionRef` (from the snapshot) back to the Discovery Connector API when calling connector operations:
+
+```typescript
+// Executor Agent calls Discovery's connector execution proxy
+// Discovery decrypts the connectionRef using its own KMS key and executes the delete
+// The Erasure Engine never sees raw vendor API credentials
+async function executeConnectorDeletion(
+  system: SnapshotSystem,
+  dpIdentifierHash: string
+): Promise<DeletionResult> {
+  const response = await discoveryApiClient.post('/connectors/execute-deletion', {
+    connectionRef: system.connectionRef,   // Opaque — Discovery decrypts
+    dpIdentifierHash,
+    dataCategories: system.dataCategories,
+  }, {
+    headers: { 'X-API-Key': process.env.DISCOVERY_API_KEY },
+  });
+  return response.data;
+}
+```
+
+This keeps vendor credentials centralized in Discovery's Secrets Manager and eliminates the need for Erasure Engine to independently manage 9+ vendor credential sets.
 
 ---
 

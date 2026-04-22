@@ -66,10 +66,9 @@ erasure-engine/
 │   ├── API_SPEC.md                 # REST API contracts
 │   └── AGENTIC_AI_DESIGN.md        # Multi-agent design, agent responsibilities, safety
 ├── diagrams/
-│   ├── system-architecture.md      # Component diagram (Mermaid)
-│   ├── agentic-erasure-flow.md     # Multi-agent execution flow (Mermaid)
-│   ├── data-model.md               # ER diagram (Mermaid)
-│   └── safety-mechanisms.md        # Human-in-the-loop and guardrail flow (Mermaid)
+│   ├── system-architecture.md      # Component diagram + network isolation (Mermaid)
+│   ├── agentic-erasure-flow.md     # Multi-agent execution flow + safety gates (Mermaid)
+│   └── data-model.md               # ER diagram (Mermaid)
 └── src/                            # Source code (to be added)
 ```
 
