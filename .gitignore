@@ -4,6 +4,6 @@
 .gemini/
 AGENTS.md
 GEMINI.md
-
+.DS_Store
 # Re-ignore gitignore itself so it stays tracked
 !.gitignore
